@@ -28,6 +28,13 @@ class TNGVerifier:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
+    def _init_db(self):
+        """
+        Initialize SQLite database and transactions table.
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
         # Initialize transactions table schema
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS transactions (
@@ -38,6 +45,7 @@ class TNGVerifier:
                 status TEXT,
                 transaction_no TEXT,
                 raw_text TEXT,
+                layer_1_status TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -66,7 +74,8 @@ class TNGVerifier:
             "wallet_ref": "",
             "status": None,
             "transaction_no": None,
-            "raw_text": ""
+            "raw_text": "",
+            "layer_1_status": "Failure"
         }
 
         # Combine items for easier searching
@@ -127,6 +136,13 @@ class TNGVerifier:
                     if txn_match:
                         raw_hex = txn_match.group(0).replace('-', '')
                         data["transaction_no"] = f"{raw_hex[:8]}-{raw_hex[8:12]}-{raw_hex[12:16]}-{raw_hex[16:20]}-{raw_hex[20:]}"
+
+        # Determine Layer 1 Status (all required fields must be present)
+        required_fields = ["transfer_to", "date_time", "wallet_ref", "status", "transaction_no"]
+        if all(data.get(f) for f in required_fields):
+            data["layer_1_status"] = "Success"
+        else:
+            data["layer_1_status"] = "Failure"
                         
         return data
 
@@ -137,15 +153,16 @@ class TNGVerifier:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO transactions (transfer_to, date_time, wallet_ref, status, transaction_no, raw_text)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO transactions (transfer_to, date_time, wallet_ref, status, transaction_no, raw_text, layer_1_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', (
             data.get("transfer_to"),
             data.get("date_time"),
             data.get("wallet_ref"),
             data.get("status"),
             data.get("transaction_no"),
-            data.get("raw_text")
+            data.get("raw_text"),
+            data.get("layer_1_status")
         ))
         conn.commit()
         conn.close()
@@ -169,6 +186,6 @@ if __name__ == "__main__":
                 print(f"  {key}: {value}")
         
         verifier.save_to_db(extracted_data)
-        print(f"\nData saved to transactions.db (Took {execution_time:.2f} seconds)")
+        print(f"\nData saved to transactions.db (Took {execution_time:.2f} seconds Status: {extracted_data['layer_1_status']})")
     else:
         print(f"Sample image {sample_image} not found in current directory.")
