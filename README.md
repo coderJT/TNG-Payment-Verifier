@@ -5,9 +5,8 @@
 
 **Detection Workflow:**
 
-1. Layer 1 - OCR Text Extraction (Transfer To, Date/Time, Wallet Ref, Status, Transaction No.) -> Store in DB (e.g. Supabase)
-2. Layer 2 - OpenCV Template Matching
-3. Layer 3 - Image Forensics (ELA, Noise Analysis)
+1. Layer 1 - OCR Text Extraction (Transfer To, Date/Time, Wallet Ref, Status, Transaction No.) -> Store in DB (e.g. Supabase) -> Duplication Check
+2. Layer 2 - Image Forensics (ELA, Noise Analysis)
 
 
 **What to do if flagged as fraudulent?**
