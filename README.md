@@ -5,7 +5,7 @@
 
 **Detection Workflow:**
 
-1. Layer 1 - OCR Text Extraction (Transfer To, Date/Time, Wallet Ref, Status, Transaction No.) -> Store in DB (e.g. Supabase) -> Duplication Check
+1. Layer 1 - OCR Text Extraction (Transfer To, Date/Time, Wallet Ref, Status, Transaction No.) -> Store in DB (SQLite) -> Duplication Check
 2. Layer 2 - Image Forensics (ELA, Noise Analysis)
 
 
@@ -16,12 +16,32 @@
 3. Admin will receive status updates in real-time.
 
 
-**Potential Bottlenecks:**
+**How to Run**
 
-1. How long will the detection workflow execute? -> 2-3 seconds per image
-2. How accurate is the entire workflow? -> Currently it successfully detect background color changes as well as photoshop tamperment.
+1. **Setup Environment**
+   Create and activate a virtual environment:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+
+2. **Install Dependencies**
+   Install required packages:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Execution**
+   Place transaction screenshots in the `images/` directory and run:
+   ```bash
+   python3 src/verifier.py
+   ```
+
+The script will process images in `images/`, perform OCR and forensic checks, and save results to `transactions.db`.
 
 
 **Potential Improvements:**
 
-1. Usage of machine learning model (however requires big bulk of data.)
+1. Integration with cloud databases (e.g., Supabase).
+2. Web dashboard for real-time visualization.
+3. Machine learning for advanced behavioral analysis.

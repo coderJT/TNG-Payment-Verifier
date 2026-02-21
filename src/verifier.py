@@ -266,28 +266,33 @@ class TNGVerifier:
 # Test execution here
 if __name__ == "__main__":
     verifier = TNGVerifier()
-    test_images = ["payment_sample.PNG", "payment_sample2.PNG", "payment_sample3.PNG", "fraud_sample.jpg", "fraud_sample2.jpg", "fraud_sample3.jpg"]
+    test_dir = "images"
     
-    for img_name in test_images:
-        if os.path.exists(img_name):
-            print(f"\n--- Processing {img_name} ---")
+    if os.path.exists(test_dir):
+        image_extensions = ('.jpg', '.jpeg', '.png', '.PNG')
+        test_images = [os.path.join(test_dir, f) for f in os.listdir(test_dir) if f.lower().endswith(image_extensions)]
+        
+        print(f"Found {len(test_images)} images in {test_dir}/")
+
+        for img_path in sorted(test_images):
+            print(f"\n--- Processing {img_path} ---")
 
             # Timing start
             start_time = time.time()
             
             # Layer 1: OCR
-            ocr_results = verifier.extract_text(img_name)
+            ocr_results = verifier.extract_text(img_path)
             extracted_data = verifier.parse_data(ocr_results)
             
             # Layer 2: Image Forensics
-            ela_score, software_detected = verifier.perform_ela(img_name)
-            noise_score = verifier.analyze_noise(img_name)
+            ela_score, software_detected = verifier.perform_ela(img_path)
+            noise_score = verifier.analyze_noise(img_path)
             
             extracted_data["ela_score"] = ela_score
             extracted_data["noise_score"] = noise_score
             extracted_data["software_detected"] = software_detected
             
-            # Noise: ~660.0, ELA: ~0.24
+            # Calibration Baseline (approximate, should ideally be dynamic)
             noise_baseline = 660.0
             noise_deviation = abs(noise_score - noise_baseline) / noise_baseline
             
@@ -309,6 +314,6 @@ if __name__ == "__main__":
             
             verifier.save_to_db(extracted_data)
             print(f"\nData saved to transactions.db (Took {execution_time:.2f} seconds Status: L1={extracted_data['layer_1_status']}, L2={extracted_data['layer_2_status']})")
-        else:
-            print(f"\nImage {img_name} not found.")
+    else:
+        print(f"Test directory {test_dir} not found.")
 
