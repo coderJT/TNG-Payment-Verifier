@@ -9,11 +9,6 @@
 2. Layer 2 - Image Forensics (ELA, Noise Analysis)
 
 
-**What to do if flagged as fraudulent?**
-
-1. Notify admin immediately.
-
-
 **Production Workflow:**
 
 1. Host app accepts user's payment input (through screenshot).
@@ -23,8 +18,8 @@
 
 **Potential Bottlenecks:**
 
-1. How long will the detection workflow execute?
-2. How accurate is the entire workflow?
+1. How long will the detection workflow execute? -> 2-3 seconds per image
+2. How accurate is the entire workflow? -> Currently it successfully detect background color changes as well as photoshop tamperment.
 
 
 **Potential Improvements:**
