@@ -61,119 +61,88 @@ class TNGVerifier:
             return cv2.resize(img, new_size, interpolation=cv2.INTER_AREA)
         return img
 
-    def extract_text(self, image_path):
+    def extract_text(self, img):
         """
         Extract all text items from the image using EasyOCR.
+        Supports numpy array directly to save memory.
         """
-        if not os.path.exists(image_path):
-            raise FileNotFoundError(f"Image not found at {image_path}")
-        
-        # Reader is initialized in __init__, just use it
-        results = self.reader.readtext(image_path)
+        results = self.reader.readtext(img)
         return results
 
-    def perform_ela(self, image_path, quality=90):
+    def perform_ela(self, img, image_path=None, quality=90):
         """
-        Perform Error Level Analysis (ELA) on the image.
+        Perform Error Level Analysis (ELA) on the provided image buffer.
         """
-        temp_filename = "ela_temp.jpg"
+        temp_filename = f"ela_{int(time.time()*1000)}.jpg"
         software_detected = None
         
-        # Metadata check
-        try:
-            with open(image_path, 'rb') as f:
-                content = f.read()
-                if b'Photoshop' in content:
-                    software_detected = "Adobe Photoshop"
-                elif b'GIMP' in content:
-                    software_detected = "GIMP"
-        except Exception:
-            pass
+        # Metadata check (still needs path)
+        if image_path:
+            try:
+                with open(image_path, 'rb') as f:
+                    content = f.read()
+                    if b'Photoshop' in content: software_detected = "Adobe Photoshop"
+                    elif b'GIMP' in content: software_detected = "GIMP"
+            except Exception: pass
 
-        # Load and downsample for memory efficiency
-        original_full = cv2.imread(image_path)
-        if original_full is None:
+        if img is None:
             return 0.0, 0.0, software_detected
         
-        original = self._downsample_image(original_full)
-        del original_full # Free memory
-
-        # Save at a lower quality and calculate difference
-        cv2.imwrite(temp_filename, original, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        # Perform ELA in-memory as much as possible
+        cv2.imwrite(temp_filename, img, [cv2.IMWRITE_JPEG_QUALITY, quality])
         resaved = cv2.imread(temp_filename)
-        diff = cv2.absdiff(original, resaved)
+        diff = cv2.absdiff(img, resaved)
         
-        # Cleanup
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
 
-        # Calculate average difference (global ELA)
         avg_diff = np.mean(diff)
-        
-        # Calculate localized anomalies (standard deviation of the ELA map)
         gray_diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
         hotspot_score = np.std(gray_diff)
             
         return float(avg_diff), float(hotspot_score), software_detected
 
-    def analyze_noise(self, image_path, block_size=64):
+    def analyze_noise(self, img_bgr, block_size=64):
         """
-        Analyze noise floor consistency using isolated pure noise.
+        Analyze noise floor consistency using isolated pure noise from BGR buffer.
         """
-        # Load and downsample to save memory
-        img_full = cv2.imread(image_path, 0)
-        if img_full is None:
-            return 0.0, 0.0
+        if img_bgr is None: return 0.0, 0.0
         
-        img = self._downsample_image(img_full)
-        del img_full
-
+        # Convert to gray for noise analysis
+        img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
         denoised = cv2.medianBlur(img, 3)
         pure_noise = cv2.absdiff(img, denoised)
         
         h, w = pure_noise.shape
         variances = []
-        
         for y in range(0, h - block_size, block_size):
             for x in range(0, w - block_size, block_size):
                 block = pure_noise[y:y+block_size, x:x+block_size]
                 if np.mean(block) > 0.1:
                     variances.append(np.var(block))
         
-        if not variances:
-            return 0.0, 0.0
-
+        if not variances: return 0.0, 0.0
         avg_noise = np.mean(variances)
         inconsistency = np.std(variances) / (avg_noise + 1e-6)
-        
         return float(avg_noise), float(inconsistency)
 
-    def detect_pca_anomalies(self, image_path):
+    def detect_pca_anomalies(self, img_bgr):
         """
-        Use Principal Component Analysis to detect localized color-space manipulation.
+        Detect color anomalies via PCA projection from pre-loaded buffer.
         """
-        img_full = cv2.imread(image_path)
-        if img_full is None:
-            return 0.0
-            
-        # Heavy downsampling for PCA to keep memory usage low (it creates large cov matrices)
-        img = self._downsample_image(img_full, max_dim=800)
-        del img_full
+        if img_bgr is None: return 0.0
         
+        # PCA needs a lot of memory, so we downsample internally even further
+        img = self._downsample_image(img_bgr, max_dim=800)
         rows, cols, colors = img.shape
         flattened = img.reshape((-1, colors)).astype(np.float32)
         
-        # PCA projection logic (2nd principal component)
         try:
             cov = np.cov(flattened.T)
             evals, evecs = np.linalg.eigh(cov)
-            # eigh returns sorted, so index 1 (middle) is the 2nd component
             pc2 = evecs[:, 1]
             projected = np.dot(flattened, pc2)
             projected_map = np.reshape(projected, (rows, cols))
-            
-            # Anomaly score is the normalized standard deviation of the projected map
-            # Authentic images should be relatively uniform in this projection
             local_variance = np.std(projected_map) / (np.abs(np.mean(projected_map)) + 1e-6)
             return float(local_variance)
         except Exception:
@@ -201,7 +170,6 @@ class TNGVerifier:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # We search if these IDs appear anywhere in the metadata_json of existing records
         for uid in unique_ids:
             cursor.execute("SELECT id FROM transactions WHERE metadata_json LIKE ?", (f'%{uid}%',))
             if cursor.fetchone():
@@ -212,112 +180,72 @@ class TNGVerifier:
         return False
 
     def parse_data(self, ocr_results):
-        """
-        Parse OCR results using generalized patterns to support various payment methods.
-        """
-        data = {}
+        """Parse OCR results using patterns and heuristics (Refactor: Concise & Cap-enforced)."""
         lines = [r[1] for r in ocr_results]
-        raw_content = "\n".join(lines)
+        raw, data, used = "\n".join(lines), {}, set()
         
-        # Generalized Patterns
         patterns = {
-            "recipient": [r"Transfer To", r"Recipient", r"Pay To", r"Paid To", r"Payee", r"Beneficiary"],
-            "amount": [r"Amount", r"Total", r"RM", r"\$"],
+            "recipient": [r"Transfer To", r"Recipient", r"Pay To", r"Paid To", r"Payee", r"Beneficiary", r"\bTo\b"],
+            "amount": [r"Amount", r"Total", r"RM", r"MYR", r"\$"],
             "date_time": [r"Date", r"Time", r"Transaction Date", r"Date & Time"],
             "reference": [r"Ref", r"Reference", r"Wallet Ref", r"Ref No"],
             "transaction_id": [r"Transaction No", r"Transaction ID", r"Txn ID", r"Trace No", r"DuitNow Ref"]
         }
+        ui_kb = {"details", "successful", "status", "payment", "receipt", "share", "duitnow", "transaction", "amount", "recipient", "payee", "beneficiary", "done", "pay", "scan", "cimb", "maybank", "rhb", "ewallet", "bank", "tng"}
 
-        # Dynamic Extraction with index tracking
-        used_indices = set()
-        for label, regexes in patterns.items():
+        def is_bad(val, lbl):
+            if any(re.search(r, val, re.I) for p in patterns.values() for r in p) and len(val) < 25:
+                return not (lbl == "amount" and re.search(r'RM|MYR|[\$\d\.]{3,}', val))
+            return any(b in val.lower() for b in ui_kb)
+
+        # Extraction
+        for lbl, regs in patterns.items():
             for i, line in enumerate(lines):
-                if any(re.search(r, line, re.IGNORECASE) for r in regexes):
-                    used_indices.add(i)
-                    # Try to find the value in the CURRENT or next few items
-                    for j in range(i, min(i+3, len(lines))):
-                        val = lines[j].strip()
-                        if not val: continue
-                        
-                        # SKIP logic
-                        is_ui_label = False
-                        for all_regexes in patterns.values():
-                            if any(re.search(r, val, re.IGNORECASE) for r in all_regexes):
-                                if len(val) < 25: 
-                                    is_ui_label = True
-                                    break
-                        
-                        ui_blacklist = ["details", "successful", "status", "payment", "transfer to wallet", 
-                                        "receipt", "share", "duitnow", "transaction", "amount", "recipient", "payee", "beneficiary"]
-                        if is_ui_label or any(b in val.lower() for b in ui_blacklist):
-                            if label == "amount" and re.search(r'RM|[\$\d\.]{3,}', val):
-                                pass 
-                            else:
-                                continue
-                            
-                        # VALUE VALIDATION
-                        if label == "amount" and not re.search(r'\d', val): continue
-                        if label == "recipient":
-                            if any(x in val.lower() for x in ["wallet", "ref", "time", "date"]): continue
-                            if len(val) < 3 or not re.search(r'[A-Za-z]', val): continue
-                        
-                        if val:
-                            data[label] = val
-                            used_indices.add(j)
+                if any(re.search(r, line, re.I) for r in regs):
+                    used.add(i)
+                    if lbl == "recipient":
+                        # Multi-line name recovery: collect all caps strings in [i-2, i+3]
+                        name_parts = []
+                        for k in range(max(0, i-2), min(len(lines), i+4)):
+                            v = lines[k].strip()
+                            if v.isupper() and len(v) >= 3 and not re.search(r'\d', v) and not is_bad(v, lbl):
+                                name_parts.append(v)
+                                used.add(k)
+                        if name_parts:
+                            # Join parts, removing duplicates while preserving order
+                            seen = set()
+                            data[lbl] = " ".join([x for x in name_parts if not (x in seen or seen.add(x))])
                             break
-                    if label in data:
-                        break
+                    else:
+                        for j in range(i, min(i+3, len(lines))):
+                            v = lines[j].strip()
+                            if not v or is_bad(v, lbl): continue
+                            if lbl == "amount" and not re.search(r'\d', v): continue
+                            data[lbl], _ = v, used.add(j)
+                            break
+                if lbl in data: break
 
-        # FALLBACK: Recipient recovery
+        # Fallback Recipient
         if "recipient" not in data:
-            for i, line in enumerate(lines):
-                if any(x in line.lower() for x in ["successful", "rm", "amount", "$"]):
-                    for j in range(i + 1, min(i + 4, len(lines))):
-                        candidate = lines[j].strip()
-                        if (len(candidate) > 5 and candidate.isupper() and 
-                            re.search(r'[A-Z]', candidate) and 
-                            not re.search(r'\d', candidate)):
-                            
-                            ui_blacklist = ["SUCCESSFUL", "PAYMENT", "RM", "DETAILS", "SHARE", "RECEIPT", "DONE"]
-                            if not any(b in candidate for b in ui_blacklist):
-                                data["recipient"] = candidate
-                                used_indices.add(j)
-                                break
-                    if "recipient" in data:
-                        break
+            for i, l in enumerate(lines):
+                if any(x in l.lower() for x in ["successful", "rm", "myr", "amount", "$"]):
+                    for j in range(i + 1, min(i + 6, len(lines))):
+                        v = lines[j].strip()
+                        if v.isupper() and len(v) > 5 and not re.search(r'\d', v) and not any(b in v for b in ["SUCCESSFUL", "PAYMENT", "RM", "DETAILS", "SHARE", "RECEIPT", "DONE"]):
+                            data["recipient"], _ = v, used.add(j)
+                            break
+                    if "recipient" in data: break
 
-        # COLLECT UNKNOWN FIELDS
-        unknown = []
-        ui_blacklist = ["details", "successful", "status", "payment", "receipt", "share", "done", "pay", "scan", "receipt"]
-        extracted_values = set(data.values())
-        for i, line in enumerate(lines):
-            val = line.strip()
-            if i not in used_indices and len(val) > 2:
-                # Filter out pure digits (usually refs/dates caught elsewhere) or known UI words
-                # and skip values already assigned to a primary field
-                if not any(b in val.lower() for b in ui_blacklist) and val not in extracted_values:
-                    unknown.append(val)
-        if unknown:
-            data["unknown_fields"] = unknown
+        # Unknown & Specialized
+        ext_v = set(data.values())
+        unknown = [l.strip() for i, l in enumerate(lines) if i not in used and len(l.strip()) > 2 and not any(b in l.lower() for b in ui_kb) and l.strip() not in ext_v]
+        if unknown: data["unknown_fields"] = unknown
 
-        # Specific heavy-lifting for complex fields
-        # Date/Time
-        date_match = re.search(r'\d{2}/\d{2}/\d{4}\s+\d{2}[:\.]\d{2}[:\.]\d{2}', raw_content)
-        if date_match: data["date_time_precise"] = date_match.group(0)
+        for r, k in [(r'\d{2}/\d{2}/\d{4}\s+\d{2}[:\.]\d{2}[:\.]\d{2}', "date_time_precise"), (r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', "uuid")]:
+            m = re.search(r, raw, re.I if k=="uuid" else 0)
+            if m: data[k] = m.group(0) if k=="date_time_precise" else re.findall(r, raw.lower())[0]
 
-        # UUID / Transaction IDs
-        uuids = re.findall(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', raw_content.lower())
-        if uuids: data["uuid"] = uuids[0]
-
-        # Logic for Layer 1 Status
-        if len(data) >= 1: # Heuristic: if we found at least 3 key fields, consider it a parse success
-            if self.check_duplicate(data):
-                data["layer_1_status"] = "Duplicate"
-            else:
-                data["layer_1_status"] = "Success"
-        else:
-            data["layer_1_status"] = "Failure"
-            
+        data["layer_1_status"] = "Duplicate" if self.check_duplicate(data) else "Success" if data else "Failure"
         return data
 
     def save_to_db(self, data):
@@ -369,42 +297,47 @@ if __name__ == "__main__":
             # Timing start
             start_time = time.time()
             
-            # Layer 1: OCR
-            ocr_results = verifier.extract_text(img_path)
+            # Load and downsample ONCE per transaction to save massive memory
+            img_bgr_full = cv2.imread(img_path)
+            if img_bgr_full is None: continue
+            
+            img_shared = verifier._downsample_image(img_bgr_full, max_dim=1500)
+            del img_bgr_full # Release high-res buffer immediately
+
+            # Layer 1: OCR (using shared buffer)
+            ocr_results = verifier.extract_text(img_shared)
             extracted_data = verifier.parse_data(ocr_results)
             extracted_data["image_path"] = img_path
             
-            # Layer 2: Image Forensics
-            ela_score, hotspot_score, software_detected = verifier.perform_ela(img_path)
-            global_noise, noise_inconsistency = verifier.analyze_noise(img_path)
-            pca_score = verifier.detect_pca_anomalies(img_path)
+            # Layer 2: Image Forensics (using shared buffer)
+            ela_score, hotspot_score, s_detected = verifier.perform_ela(img_shared, img_path)
+            g_noise, n_inconsis = verifier.analyze_noise(img_shared)
+            pca_score = verifier.detect_pca_anomalies(img_shared)
             
-            extracted_data["ela_score"] = ela_score
-            extracted_data["ela_hotspot"] = hotspot_score
-            extracted_data["noise_score"] = global_noise
-            extracted_data["noise_inconsistency"] = noise_inconsistency
-            extracted_data["pca_score"] = pca_score
-            extracted_data["software_detected"] = software_detected
+            extracted_data.update({
+                "ela_score": ela_score,
+                "ela_hotspot": hotspot_score,
+                "noise_score": g_noise,
+                "noise_inconsistency": n_inconsis,
+                "pca_score": pca_score,
+                "software_detected": s_detected
+            })
             
             # Generalized Heuristics (Purely relative internal markers)
-            is_suspicious = False
-            reasons = []
+            is_suspicious, reasons = False, []
 
-            if software_detected:
+            if s_detected:
                 is_suspicious = True
-                reasons.append(software_detected)
+                reasons.append(s_detected)
             
-            # Localized noise shifts (Normal images usually have < 1.0 inconsistency)
-            if noise_inconsistency > 1.3:
+            if n_inconsis > 1.3:
                 is_suspicious = True
                 reasons.append("Inconsistent Noise")
             
-            # Localized compression hotspots (High variance in ELA map)
             if hotspot_score > 6.0:
                 is_suspicious = True
                 reasons.append("ELA Anomaly")
 
-            # PCA Color Anomaly
             if pca_score > 0.25:
                 is_suspicious = True
                 reasons.append("Color Tampering")
